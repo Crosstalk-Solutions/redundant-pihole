@@ -14,7 +14,8 @@ Each box gets:
   services are running, and, on the secondary, a reminder not to make changes there.
 
 The primary also gets [nebula-sync](https://github.com/lovelaze/nebula-sync), which copies the
-primary's full configuration to the secondary every night. With `--vip`, both boxes also get
+primary's full configuration to the secondary every night, and extra blocklists from
+[firebog.net](https://firebog.net) (see [Blocklists](#blocklists)). With `--vip`, both boxes also get
 keepalived, so clients only need one DNS address that moves to whichever box is healthy.
 
 ## Compatible operating systems
@@ -66,12 +67,34 @@ Common options:
 | `--local-domain lan --router 192.168.1.1` | Sends lookups for local hostnames to your router, so device names still resolve. |
 | `--static 192.168.1.2/24 --gateway 192.168.1.1` | Sets a static IP with NetworkManager. A DHCP reservation on your router is simpler. |
 | `--sync-schedule "30 3 * * *"` | Sets when the primary pushes to the secondary. |
+| `--firebog 2`, `--firebog allgreen`, `--no-firebog` | Changes how many firebog.net blocklists the primary adds. See below. |
 
 Run `bash redundant-pihole.sh --help` for the full list. The script is safe to run again: on a box
 that already has Pi-hole, it skips the Pi-hole install and re-applies everything else.
 
 After both boxes are built, set your router's DHCP to hand out both Pi-hole IPs as DNS servers,
 or only the virtual IP if you used `--vip`.
+
+## Blocklists
+
+Pi-hole starts with one blocklist. [firebog.net](https://firebog.net) keeps a curated collection
+in five categories (Suspicious, Advertising, Tracking & Telemetry, Malicious, Other) and marks the
+lists least likely to block sites you actually use in green. On the primary, the script adds the
+top 3 green lists from each category, then updates gravity. nebula-sync copies them to the
+secondary.
+
+| Option | Lists added (as of November 2026) |
+|---|---|
+| `--firebog 3` (default) | 12: the top 3 green lists in each category. Other has no green lists. |
+| `--firebog 2` | 8: the top 2 green lists in each category. |
+| `--firebog allgreen` | All 25 green lists. |
+| `--no-firebog` | None. Pi-hole's default list only. |
+
+The script reads firebog.net's current list at install time, so it picks up changes to the
+collection. If firebog.net can't be reached, it uses a copy built into the script and warns you.
+
+Running the script again never adds a list twice. It also never removes lists, so to go from
+`allgreen` down to `3`, delete the extra lists under **Lists** in the primary's admin page.
 
 Make all changes on the primary. The secondary is overwritten on every sync. Updates do not sync,
 so run `sudo pihole -up` on each box, one at a time.

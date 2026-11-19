@@ -31,7 +31,7 @@
 set -Eeuo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin
 
-SCRIPT_VERSION="1.0.2"
+SCRIPT_VERSION="1.1.0"
 LOG=/var/log/redundant-pihole.log
 
 # ---- defaults (every one can be set by flag or environment variable) -------
@@ -49,6 +49,7 @@ SYNC_CRON="${SYNC_CRON:-30 3 * * *}"
 SYNC_TZ="${SYNC_TZ:-}"
 NEBULA_VERSION="${NEBULA_VERSION:-latest}"
 SKIP_SYNC="${SKIP_SYNC:-0}"
+FIREBOG="${FIREBOG:-3}"
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
 
 usage() {
@@ -84,7 +85,12 @@ Optional:
   --timezone TZ              Timezone for the sync schedule (default: system).
   --nebula-version vX.Y.Z    Pin a nebula-sync release (default: latest).
   --no-sync                  On the primary, skip installing nebula-sync.
-  -y, --yes                  Never prompt. Fail if a required value is missing.
+  --firebog N|allgreen       On the primary, add the top N green (least likely
+                             to break sites) blocklists from each firebog.net
+                             category, or every green list with "allgreen".
+                             Default 3. The secondary gets them through sync.
+  --no-firebog               Keep only Pi-hole's default blocklist.
+  -y, --yes                 Never prompt. Fail if a required value is missing.
   -h, --help                 Show this help.
 EOF
 }
@@ -152,6 +158,8 @@ while [[ $# -gt 0 ]]; do
     --timezone)       SYNC_TZ=${2:-}; shift 2 ;;
     --nebula-version) NEBULA_VERSION=${2:-}; shift 2 ;;
     --no-sync)        SKIP_SYNC=1; shift ;;
+    --firebog)        FIREBOG=${2:-}; shift 2 ;;
+    --no-firebog)     FIREBOG=0; shift ;;
     -y|--yes)         NONINTERACTIVE=1; shift ;;
     -h|--help)        usage; exit 0 ;;
     *) usage >&2; die "Unknown option: $1" ;;
@@ -243,6 +251,8 @@ fi
 if [[ -n $LOCAL_DOMAIN || -n $ROUTER_IP ]]; then
   [[ -n $LOCAL_DOMAIN ]] && is_ipv4 "$ROUTER_IP" || die "--local-domain and --router go together."
 fi
+FIREBOG=${FIREBOG,,}
+[[ $FIREBOG == allgreen || $FIREBOG =~ ^[0-9]+$ ]] || die "--firebog must be a number or allgreen."
 [[ -n $SYNC_TZ ]] || SYNC_TZ=$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo UTC)
 
 ok "Role: $ROLE   This box: $SELF_IP   Peer: $PEER_IP${VIP:+   VIP: $VIP}"
@@ -400,6 +410,15 @@ api_login() {
   [[ -n $sid ]] && curl -sS -m 5 -X DELETE "$1/api/auth" -H "X-FTL-SID: $sid" >/dev/null 2>&1
   return 0
 }
+# api_sid URL PASSWORD: prints a session ID for later API calls
+api_sid() {
+  local body sid
+  body=$(curl -sS -m 10 -X POST "$1/api/auth" -H 'Content-Type: application/json' \
+         --data "$(json_pw "$2")" 2>/dev/null) || return 1
+  sid=$(sed -n 's/.*"sid":"\([^"]*\)".*/\1/p' <<<"$body")
+  [[ -n $sid ]] && printf '%s' "$sid"
+}
+api_logout() { curl -sS -m 5 -X DELETE "$1/api/auth" -H "X-FTL-SID: $2" >/dev/null 2>&1 || true; }
 wait_for_api() { # URL seconds
   local i
   for (( i=0; i<$2; i+=2 )); do
@@ -425,6 +444,97 @@ for i in {1..10}; do
   [[ -n $ans ]] && break; sleep 2
 done
 [[ -n ${ans:-} ]] && ok "Pi-hole resolves pi-hole.net -> $ans" || warn "Pi-hole is not resolving yet. Check: pihole status"
+
+# ============================================================================
+if [[ $ROLE == primary && $FIREBOG != 0 ]]; then
+step "Adding firebog.net blocklists"
+# ============================================================================
+  # firebog.net publishes its lists as CSV for scripts, generated from its front
+  # page: category,ticktype,source repo,description,list URL. "tick" marks the
+  # green lists, the ones least likely to block sites people actually use.
+  # The copy below is used only if firebog.net can't be reached (green lists as
+  # of 2026-11-19). Lists only go on the primary; nebula-sync copies them over.
+  FIREBOG_FALLBACK=$(cat <<'CSV'
+"suspicious","tick","https://github.com/PolishFiltersTeam/KADhosts","PolishFiltersTeam KADhosts","https://raw.githubusercontent.com/PolishFiltersTeam/KADhosts/master/KADhosts.txt"
+"suspicious","tick","https://github.com/FadeMind/hosts.extras/","Fademind's Spammers","https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.Spam/hosts"
+"suspicious","tick","https://v.firebog.net/hosts/static/w3kbl.txt","WaLLy3K's Blacklist","https://v.firebog.net/hosts/static/w3kbl.txt"
+"advertising","tick","https://adaway.org/","AdAway","https://adaway.org/hosts.txt"
+"advertising","tick","https://filters.adtidy.org/extension/chromium/filters/15.txt","Adguard DNS","https://v.firebog.net/hosts/AdguardDNS.txt"
+"advertising","tick","https://github.com/LanikSJ/ubo-filters","LanikSJ's Admiral Anti-Adblock","https://v.firebog.net/hosts/Admiral.txt"
+"advertising","tick","https://github.com/anudeepND/blacklist","Anudeep ND's Blacklist","https://raw.githubusercontent.com/anudeepND/blacklist/master/adservers.txt"
+"advertising","tick","https://github.com/easylist/easylist","Easylist","https://v.firebog.net/hosts/Easylist.txt"
+"advertising","tick","https://pgl.yoyo.org/adservers/","Peter Lowe's Adservers","https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext"
+"advertising","tick","https://github.com/FadeMind/hosts.extras","Fademind's Unchecky Ads","https://raw.githubusercontent.com/FadeMind/hosts.extras/master/UncheckyAds/hosts"
+"advertising","tick","https://github.com/bigdargon/hostsVN","hostsVN","https://raw.githubusercontent.com/bigdargon/hostsVN/master/hosts"
+"tracking","tick","https://github.com/easylist/easylist","Easyprivacy","https://v.firebog.net/hosts/Easyprivacy.txt"
+"tracking","tick","https://dsi.ut-capitole.fr/blacklists/index_en.php","Fabrice Prigent's Ads","https://v.firebog.net/hosts/Prigent-Ads.txt"
+"tracking","tick","https://github.com/Fademind/hosts.extras","Fademind's 2o7 Network Trackers","https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.2o7Net/hosts"
+"tracking","tick","https://github.com/crazy-max/WindowsSpyBlocker","Crazy Max's Microsoft Telemetry","https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt"
+"tracking","tick","https://hostfiles.frogeye.fr/","Geoffrey Frogeye's First-Party Trackers","https://hostfiles.frogeye.fr/firstparty-trackers-hosts.txt"
+"malicious","tick","https://github.com/DandelionSprout/adfilt","DandelionSprout's Anti Malware Filter","https://raw.githubusercontent.com/DandelionSprout/adfilt/master/Alternate%20versions%20Anti-Malware%20List/AntiMalwareHosts.txt"
+"malicious","tick","https://dsi.ut-capitole.fr/blacklists/index_en.php","Fabrice Prigent's Cryptojacking","https://v.firebog.net/hosts/Prigent-Crypto.txt"
+"malicious","tick","https://github.com/FadeMind/hosts.extras","Fademind's Risky Hosts","https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.Risk/hosts"
+"malicious","tick","https://www.phishing.army/","Phishing Army's Extended Blocklist","https://phishing.army/download/phishing_army_blocklist_extended.txt"
+"malicious","tick","https://gitlab.com/quidsup/notrack-blocklists","Quidsup Malicious","https://gitlab.com/quidsup/notrack-blocklists/raw/master/notrack-malware.txt"
+"malicious","tick","https://github.com/Spam404/lists","Spam404","https://raw.githubusercontent.com/Spam404/lists/master/main-blacklist.txt"
+"malicious","tick","https://github.com/AssoEchap/stalkerware-indicators","Echap's Stalkerware Indicators","https://raw.githubusercontent.com/AssoEchap/stalkerware-indicators/master/generated/hosts"
+"malicious","tick","https://urlhaus.abuse.ch/api/","URLhaus Malicious URL blocklist","https://urlhaus.abuse.ch/downloads/hostfile/"
+"malicious","tick","https://cyberhost.uk/malware-blocklist/","CyberHost.uk Malware Domains","https://lists.cyberhost.uk/malware.txt"
+CSV
+)
+  # CSV on stdin -> "category<TAB>URL" for the green lists we want, in page order
+  firebog_pick() {
+    awk -F'","' -v n="$FIREBOG" '
+      { gsub(/\r/, ""); gsub(/^"|"$/, "") }
+      $2 == "tick" && $5 ~ /^https?:\/\/[^ "]+$/ && (n == "allgreen" || seen[$1]++ < n + 0) {
+        print $1 "\t" $5 }'
+  }
+  picked=$(curl -fsSL -m 20 https://v.firebog.net/hosts/csv.txt 2>/dev/null | firebog_pick || true)
+  if [[ -n $picked ]]; then
+    src="firebog.net"
+  else
+    picked=$(firebog_pick <<<"$FIREBOG_FALLBACK")
+    src="the copy built into this script"
+    warn "Could not read the current lists from firebog.net, so I used the copy built into this script (2026-11-19)."
+  fi
+
+  sid=$(api_sid http://127.0.0.1 "$PIHOLE_PASSWORD") || die "Could not log in to this box's Pi-hole API to add blocklists."
+  # Skip lists Pi-hole already has. The API rejects a whole request if every
+  # address in it is a duplicate, so only new addresses get sent.
+  existing=$(curl -sS -m 10 "http://127.0.0.1/api/lists?type=block" -H "X-FTL-SID: $sid" 2>/dev/null || true)
+  new=""
+  while IFS=$'\t' read -r category url; do
+    [[ $existing == *"\"address\":\"$url\""* ]] || new+="$category"$'\t'"$url"$'\n'
+  done <<<"$picked"
+  total=$(grep -c . <<<"$picked" || true)
+  sent=$(grep -c . <<<"$new" || true)
+  present=$((total - sent)) added=0
+  for category in $(cut -f1 <<<"$new" | awk 'NF && !seen[$0]++'); do
+    urls=$(awk -F'\t' -v c="$category" '$1 == c { printf "%s\"%s\"", sep, $2; sep = "," }' <<<"$new")
+    resp=$(curl -sS -m 30 -X POST "http://127.0.0.1/api/lists?type=block" -H "X-FTL-SID: $sid" \
+           -H 'Content-Type: application/json' \
+           --data "{\"address\":[$urls],\"comment\":\"firebog.net green list ($category)\",\"groups\":[0],\"enabled\":true}" 2>/dev/null || true)
+    s=$(sed -n 's/.*"success":\[\(.*\)\].*/\1/p' <<<"$resp" | grep -o '"item"' | wc -l || true)
+    added=$((added + s))
+    [[ $resp == *'"errors":[]'* ]] || printf 'firebog %s: %s\n' "$category" "$resp" >>"$LOG"
+  done
+  failed=$((sent - added))
+  api_logout http://127.0.0.1 "$sid"
+  msg="$added added"; (( present == 0 )) || msg+=", $present already there"
+  ok "Blocklists from $src: $msg"
+  (( failed == 0 )) || warn "$failed blocklist(s) could not be added. See $LOG."
+
+  echo "  Downloading the blocklists (pihole -g). This takes a minute or two..."
+  if pihole -g >>"$LOG" 2>&1; then
+    lists=$(pihole-FTL sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM adlist WHERE enabled = 1 AND type = 0;")
+    domains=$(pihole-FTL sqlite3 /etc/pihole/gravity.db "SELECT COUNT(DISTINCT domain) FROM gravity;")
+    bad=$(pihole-FTL sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM adlist WHERE enabled = 1 AND type = 0 AND status = 4;")
+    ok "Gravity updated: $lists blocklists, $domains unique domains blocked"
+    (( bad == 0 )) || warn "$bad blocklist(s) could not be downloaded. Check Lists in the admin UI."
+  else
+    warn "pihole -g (gravity update) failed. Run 'sudo pihole -g' to see why."
+  fi
+fi
 
 # ============================================================================
 if [[ $ROLE == primary && $SKIP_SYNC != 1 ]]; then
