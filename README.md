@@ -23,7 +23,7 @@ Start from a fresh install with no desktop, SSH access, and a user that can run 
 
 | OS | Versions | Tested |
 |---|---|---|
-| Raspberry Pi OS Lite | Bookworm (Debian 12 based), Trixie (Debian 13 based) | In testing on a Raspberry Pi 5 |
+| Raspberry Pi OS Lite | Bookworm (Debian 12 based), Trixie (Debian 13 based) | Trixie 64-bit on a Raspberry Pi 4 |
 | Debian | 12 (Bookworm), 13 (Trixie) | Debian 13 virtual machine and container |
 | Ubuntu Server | 22.04, 24.04 and later | Ubuntu 24.04 container |
 
