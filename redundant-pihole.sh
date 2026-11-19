@@ -31,7 +31,7 @@
 set -Eeuo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin
 
-SCRIPT_VERSION="1.0.1"
+SCRIPT_VERSION="1.0.2"
 LOG=/var/log/redundant-pihole.log
 
 # ---- defaults (every one can be set by flag or environment variable) -------
@@ -572,6 +572,65 @@ EOF
     warn "NetworkManager is not running here, so I did not set a static IP. Set a DHCP reservation for $SELF_IP on your router instead, or configure netplan / /etc/network/interfaces by hand."
   fi
 fi
+
+# ============================================================================
+step "Login message"
+# ============================================================================
+# Shown on every SSH login (pam_motd runs /etc/update-motd.d), so whoever logs
+# in sees which box this is and, on the secondary, not to make changes here.
+cat >/etc/redundant-pihole.conf <<EOF
+# Written by redundant-pihole.sh. Read by /etc/update-motd.d/60-redundant-pihole.
+ROLE=$ROLE
+PEER_IP=$PEER_IP
+VIP=$VIP
+IFACE=$IFACE
+SYNC=$([[ $ROLE == primary && $SKIP_SYNC != 1 ]] && echo 1 || echo 0)
+EOF
+mkdir -p /etc/update-motd.d
+cat >/etc/update-motd.d/60-redundant-pihole <<'MOTD'
+#!/bin/sh
+# Login banner for a box built by redundant-pihole.sh.
+[ -r /etc/redundant-pihole.conf ] || exit 0
+# shellcheck source=/dev/null
+. /etc/redundant-pihole.conf
+B=$(printf '\033[1m'); Y=$(printf '\033[1;33m'); G=$(printf '\033[32m')
+R=$(printf '\033[1;31m'); N=$(printf '\033[0m')
+svc() {
+  if systemctl is-active --quiet "$1" 2>/dev/null; then printf ' %s%s up%s' "$G" "$1" "$N"
+  else printf ' %s%s DOWN%s' "$R" "$1" "$N"; fi
+}
+IP=$(ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{print $4}' | head -1)
+IP=${IP%/*}
+ROLE_UC=$(echo "$ROLE" | tr '[:lower:]' '[:upper:]')
+if [ "$ROLE" = primary ]; then OTHER=secondary; else OTHER=primary; fi
+
+echo
+echo "  ${B}=== Pi-hole ${ROLE_UC} === ${IP}${N}"
+echo "  Partner:  $PEER_IP ($OTHER)"
+echo "  Admin:    http://$IP/admin"
+SERVICES="$(svc pihole-FTL)$(svc unbound)"
+[ "$SYNC" = 1 ] && SERVICES="$SERVICES$(svc nebula-sync)"
+[ -n "$VIP" ] && SERVICES="$SERVICES$(svc keepalived)"
+echo "  Services:$SERVICES"
+if [ -n "$VIP" ]; then
+  if ip -4 addr show dev "$IFACE" | grep -q " $VIP/"; then
+    echo "  VIP:      $VIP is on THIS box"
+  else
+    echo "  VIP:      $VIP is on the other box"
+  fi
+fi
+echo
+if [ "$ROLE" = primary ]; then
+  echo "  Make all Pi-hole changes on this box. nebula-sync copies them to $PEER_IP."
+else
+  echo "  ${Y}DON'T MAKE CHANGES HERE.${N} The primary overwrites this box on every sync."
+  echo "  Make changes on the primary instead: http://$PEER_IP/admin"
+fi
+echo "  Updates don't sync. Run 'sudo pihole -up' on each box, one at a time."
+echo
+MOTD
+chmod 755 /etc/update-motd.d/60-redundant-pihole
+ok "Login message shows this box's role on every SSH login"
 
 # ============================================================================
 step "Done"

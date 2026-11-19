@@ -10,10 +10,32 @@ Each box gets:
 - Pi-hole v6 using only Unbound upstream, listening on all interfaces, with Pi-hole's own DNSSEC
   turned off (Unbound already validates).
 - The shared admin password, which the script confirms by logging in to the Pi-hole API.
+- A login message that shows whether the box is the primary or the secondary, whether its
+  services are running, and, on the secondary, a reminder not to make changes there.
 
 The primary also gets [nebula-sync](https://github.com/lovelaze/nebula-sync), which copies the
 primary's full configuration to the secondary every night. With `--vip`, both boxes also get
 keepalived, so clients only need one DNS address that moves to whichever box is healthy.
+
+## Compatible operating systems
+
+Start from a fresh install with no desktop, SSH access, and a user that can run `sudo`.
+
+| OS | Versions | Tested |
+|---|---|---|
+| Raspberry Pi OS Lite | Bookworm (Debian 12 based), Trixie (Debian 13 based) | In testing on a Raspberry Pi 5 |
+| Debian | 12 (Bookworm), 13 (Trixie) | Debian 13 virtual machine and container |
+| Ubuntu Server | 22.04, 24.04 and later | Ubuntu 24.04 container |
+
+CPU architectures: `amd64` (most PCs and VMs), `arm64` (64-bit Raspberry Pi OS), `armhf` and
+`i386`. On a Raspberry Pi, the 64-bit image is recommended (Pi 3, 4, 5 and Zero 2 W).
+
+The script stops on any OS that isn't Debian-based (Fedora, Rocky, Arch, Alpine and so on).
+`--static` also needs NetworkManager, which Raspberry Pi OS uses by default. Debian and Ubuntu
+Server usually don't, so on those use a DHCP reservation on your router.
+
+If you install Debian and set a root password in the installer, Debian leaves out `sudo`. Log in,
+run `su -`, then `apt install -y sudo curl` and `usermod -aG sudo YOUR-USER`, and log in again.
 
 ## Usage
 
