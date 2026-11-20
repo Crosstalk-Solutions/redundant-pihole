@@ -72,6 +72,11 @@ Common options:
 Run `bash redundant-pihole.sh --help` for the full list. The script is safe to run again: on a box
 that already has Pi-hole, it skips the Pi-hole install and re-applies everything else.
 
+If you reuse a Pi-hole that was already a sync target for another primary, turn off that sync on
+the old primary first. Otherwise it keeps overwriting the secondary. Sync tools often log in with
+an app password, which survives the script's password change, so on a secondary the script warns
+if an app password is set.
+
 After both boxes are built, set your router's DHCP to hand out both Pi-hole IPs as DNS servers,
 or only the virtual IP if you used `--vip`.
 

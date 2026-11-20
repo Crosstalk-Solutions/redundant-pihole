@@ -31,7 +31,7 @@
 set -Eeuo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin
 
-SCRIPT_VERSION="1.1.1"
+SCRIPT_VERSION="1.1.2"
 LOG=/var/log/redundant-pihole.log
 
 # ---- defaults (every one can be set by flag or environment variable) -------
@@ -445,6 +445,12 @@ for _ in 1 2; do
 done
 if (( pw_ok )); then ok "Password set and verified against the Pi-hole API"
 else warn "The password did not verify. Run 'sudo pihole setpassword' and log in to check."; fi
+
+# A reused Pi-hole may still be a sync target for some other primary. Those tools often log in
+# with an app password, which survives the password change above.
+if [[ $ROLE == secondary && -n $(pihole-FTL --config webserver.api.app_pwhash 2>/dev/null) ]]; then
+  warn "This box has an app password set. If another Pi-hole or sync tool used to push to it, it can still log in and overwrite this box. If nothing else should be using it, clear it with: sudo pihole-FTL --config webserver.api.app_pwhash \"\""
+fi
 
 # Quick end-to-end check: Pi-hole -> Unbound -> internet.
 for i in {1..10}; do
