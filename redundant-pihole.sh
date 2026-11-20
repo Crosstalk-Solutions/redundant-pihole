@@ -31,7 +31,7 @@
 set -Eeuo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.1.1"
 LOG=/var/log/redundant-pihole.log
 
 # ---- defaults (every one can be set by flag or environment variable) -------
@@ -262,7 +262,15 @@ step "Updating the OS and installing packages"
 # ============================================================================
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get -y -qq -o Dpkg::Options::=--force-confold upgrade >/dev/null
+n_upd=$(apt-get -s upgrade 2>/dev/null | grep -c '^Inst ' || true)
+if (( n_upd > 0 )); then
+  echo "  Installing $n_upd OS update(s). On a fresh install this can take several minutes,"
+  echo "  longer on a Raspberry Pi, and nothing prints while it runs. Let it finish."
+  apt-get -y -qq -o Dpkg::Options::=--force-confold upgrade >/dev/null
+  ok "OS updates installed ($n_upd)"
+else
+  ok "OS is already up to date"
+fi
 PKGS=(unbound dns-root-data bind9-dnsutils curl ca-certificates iproute2)
 [[ -n $VIP ]] && PKGS+=(keepalived)
 apt-get -y -qq install "${PKGS[@]}" >/dev/null
